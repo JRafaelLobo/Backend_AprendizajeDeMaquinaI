@@ -7,3 +7,12 @@ python-dotenv>=1.0,<2.0
 django-cors-headers>=4.4,<5.0
 drf-yasg>=1.21,<2.0
 mongomock>=4.1,<5.0
+PyMuPDF
+langchain 
+langchain-community 
+langchain-core
+langchain_text_splitters
+langchain-ollama
+cython
+faiss-cpu
+git+https://github.com/epfml/sent2vec.git
