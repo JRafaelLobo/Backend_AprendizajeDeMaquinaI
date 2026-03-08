@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -6,6 +7,27 @@ from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+import json
+
+import logging
+from pathlib import Path
+
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework import status
+
+from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
+from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import OllamaLLM
+
+from .embeddings import bio_wrapper
+
+logger = logging.getLogger(__name__)
 
 from chat.serializers import ChatCreateSerializer, ChatListResponseSerializer, ChatSummarySerializer
 from chat.serializers import ChatWithMessagesSerializer, MessageCreateSerializer, MessageSerializer
@@ -190,3 +212,117 @@ class MessageListCreateView(APIView):
         _sync_chat_for_user(other_user, chat)
 
         return Response(_serialize_message(message), status=status.HTTP_201_CREATED)
+    
+
+# ══════════════════════════════════════════════
+# PARÁMETROS
+# ══════════════════════════════════════════════
+
+# Path absoluto basado en la ubicación de este archivo (chat/)
+FAISS_PATH = str(Path(__file__).resolve().parent / "FAISS" / "faiss_index_renal")
+
+SYSTEM_PROMPT = (
+    "Eres el Dr. Nefros, un médico especialista en nefrología y urología con amplia experiencia clínica y docente. "
+    "Tu conocimiento está basado exclusivamente en la Sección 7 del Harrison: Principios de Medicina Interna, "
+    "que cubre la función renal y las vías urinarias.\n\n"
+
+    "## TU ROL COMO EDUCADOR\n"
+    "- Explica los temas de forma progresiva: comienza con conceptos básicos antes de profundizar.\n"
+    "- Define SIEMPRE los términos médicos o técnicos la primera vez que los uses. "
+    "Ejemplo: 'la creatinina (una sustancia de desecho que filtra el riñón)...'\n"
+    "- Usa analogías cotidianas para facilitar la comprensión cuando sea posible.\n"
+    "- Estructura tus respuestas con claridad: usa párrafos cortos, y cuando sea útil, listas o pasos numerados.\n\n"
+
+    "## MANEJO DEL CONTEXTO\n"
+    "- Basa tus respuestas ÚNICAMENTE en el contexto proporcionado a continuación.\n"
+    "- Si la pregunta es médica pero no está cubierta en el contexto, responde: "
+    "'Esa pregunta es interesante, pero no tengo información sobre ese tema en mi base de conocimientos actual. "
+    "Te recomiendo consultar directamente el Harrison o un especialista.'\n"
+    "- No inventes información ni extrapoles más allá de lo que indica el contexto.\n\n"
+
+    "## TONO Y COMUNICACIÓN\n"
+    "- Sé siempre amable, paciente, empático y motivador. Nunca uses un tono frío o condescendiente.\n"
+    "- Si alguien comete un error conceptual, corrígelo con gentileza y sin hacerle sentir mal.\n"
+    "- Si te hacen preguntas no relacionadas con medicina renal o vías urinarias, responde con amabilidad:\n"
+    "  'Me especializo en temas de función renal y vías urinarias. Para esta pregunta, te sugiero "
+    "consultar otra fuente o especialista. ¿Hay algo relacionado con los riñones en lo que pueda ayudarte?'\n\n"
+
+    "## CONTEXTO DE REFERENCIA\n"
+    "{context}"
+)
+
+
+# ══════════════════════════════════════════════
+# RAG — se inicializa una sola vez al importar el módulo
+# ══════════════════════════════════════════════
+
+def _build_rag_chain():
+    logger.info(f"⏳ Cargando índice FAISS desde: {FAISS_PATH}")
+    vector_store = FAISS.load_local(
+        FAISS_PATH,
+        bio_wrapper,
+        allow_dangerous_deserialization=True,
+    )
+
+    documentos = list(vector_store.docstore._dict.values())
+    bm25_retriever = BM25Retriever.from_documents(documentos)
+    bm25_retriever.k = 3
+
+    faiss_retriever = vector_store.as_retriever(search_kwargs={"k": 3})
+
+    retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, faiss_retriever],
+        weights=[0.5, 0.5],
+    )
+
+    llm = OllamaLLM(model="llama3.2", temperature=0.2)
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", SYSTEM_PROMPT),
+        ("human", "{input}"),
+    ])
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    chain = create_retrieval_chain(retriever, question_answer_chain)
+
+    logger.info("✅ RAG inicializado correctamente.")
+    return chain
+
+
+rag_chain = _build_rag_chain()
+
+
+# ══════════════════════════════════════════════
+# ENDPOINTS
+# ══════════════════════════════════════════════
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def chat_view(request):
+    """
+    POST /chat/message/
+    Body JSON:  { "message": "¿Qué es la creatinina?" }
+    Respuesta:  { "answer": "...", "sources": ["..."] }
+    """
+    message = request.data.get("message", "").strip()
+    if not message:
+        return Response(
+            {"error": "El mensaje no puede estar vacío."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        result = rag_chain.invoke({"input": message})
+        sources = [doc.page_content[:200] for doc in result.get("context", [])]
+        return Response({"answer": result["answer"], "sources": sources})
+
+    except Exception as e:
+        logger.error(f"Error en chat_view: {e}")
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def health_view(request):
+    """GET /chat/health/"""
+    return Response({"status": "ok", "model": "llama3.2"})
