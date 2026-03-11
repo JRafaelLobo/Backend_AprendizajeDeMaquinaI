@@ -16,3 +16,8 @@ langchain-ollama
 cython
 faiss-cpu
 git+https://github.com/epfml/sent2vec.git
+bm25_retriever
+transformers
+huggingface_hub
+psutil
+torch
