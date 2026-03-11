@@ -8,7 +8,8 @@ MODEL_PATH = str(BASE_DIR / "BioSentVec_model" / "BioSentVec_PubMed_MIMICIII-big
 
 
 def _load_model(path: str) -> sent2vec.Sent2vecModel:
-    model = sent2vec.Sent2vecModel()
+    model = sent2vec.Sent2vecModel() 
+    #model = sent2vec.SentEmbedder()  # API de Linux
     try:
         model.load_model(path)
         print("✅ BioSentVec cargado correctamente.")
