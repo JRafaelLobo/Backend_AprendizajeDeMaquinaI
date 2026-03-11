@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from pathlib import Path
+from functools import lru_cache
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -7,15 +7,12 @@ from drf_yasg.utils import swagger_auto_schema
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-import json
 
 import logging
-from pathlib import Path
 
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import serializers
 
 from langchain_community.vectorstores import FAISS
 from langchain_community.retrievers import BM25Retriever
@@ -25,7 +22,14 @@ from langchain_classic.chains.combine_documents import create_stuff_documents_ch
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import OllamaLLM
 
-from .embeddings import bio_wrapper
+from .embeddings import (
+    FaissIndexNotFoundError,
+    bio_wrapper,
+    ensure_faiss_index_exists,
+    get_faiss_index_path,
+    is_faiss_index_ready,
+    resolve_embeddings_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +222,7 @@ class MessageListCreateView(APIView):
 # PARÁMETROS
 # ══════════════════════════════════════════════
 
-# Path absoluto basado en la ubicación de este archivo (chat/)
-FAISS_PATH = str(Path(__file__).resolve().parent / "FAISS" / "faiss_index_renal")
+FAISS_PATH = get_faiss_index_path()
 
 SYSTEM_PROMPT = (
     "Eres el Dr. Nefros, un médico especialista en nefrología y urología con amplia experiencia clínica y docente. "
@@ -253,13 +256,19 @@ SYSTEM_PROMPT = (
 
 
 # ══════════════════════════════════════════════
-# RAG — se inicializa una sola vez al importar el módulo
+# RAG — se inicializa de forma diferida y se reutiliza luego
 # ══════════════════════════════════════════════
 
+@lru_cache(maxsize=1)
 def _build_rag_chain():
-    logger.info(f"⏳ Cargando índice FAISS desde: {FAISS_PATH}")
+    embeddings_mode = resolve_embeddings_mode()
+    faiss_path = ensure_faiss_index_exists(embeddings_mode)
+
+    logger.info("⏳ Inicializando RAG con EMBEDDINGS_MODE=%s", embeddings_mode)
+    logger.info("⏳ Cargando índice FAISS desde: %s", faiss_path)
+
     vector_store = FAISS.load_local(
-        FAISS_PATH,
+        faiss_path,
         bio_wrapper,
         allow_dangerous_deserialization=True,
     )
@@ -287,13 +296,23 @@ def _build_rag_chain():
     return chain
 
 
-rag_chain = _build_rag_chain()
-
-
 # ══════════════════════════════════════════════
 # ENDPOINTS
 # ══════════════════════════════════════════════
 
+class ChatMessageRequestSerializer(serializers.Serializer):
+    message = serializers.CharField(max_length=4000)
+
+class ChatMessageResponseSerializer(serializers.Serializer):
+    answer = serializers.CharField()
+    sources = serializers.ListField(child=serializers.CharField())
+
+@swagger_auto_schema(
+    method="post",
+    request_body=ChatMessageRequestSerializer,
+    responses={200: ChatMessageResponseSerializer},
+    operation_description="Enviar un mensaje al modelo RAG y obtener respuesta."
+)
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -311,9 +330,20 @@ def chat_view(request):
         )
 
     try:
-        result = rag_chain.invoke({"input": message})
+        result = _build_rag_chain().invoke({"input": message})
         sources = [doc.page_content[:200] for doc in result.get("context", [])]
         return Response({"answer": result["answer"], "sources": sources})
+
+    except FaissIndexNotFoundError as exc:
+        logger.warning("RAG no disponible: %s", exc)
+        return Response(
+            {
+                "error": str(exc),
+                "embeddings_mode": resolve_embeddings_mode(),
+                "faiss_index_path": get_faiss_index_path(),
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     except Exception as e:
         logger.error(f"Error en chat_view: {e}")
@@ -325,4 +355,12 @@ def chat_view(request):
 @permission_classes([AllowAny])
 def health_view(request):
     """GET /chat/health/"""
-    return Response({"status": "ok", "model": "llama3.2"})
+    return Response(
+        {
+            "status": "ok",
+            "model": "llama3.2",
+            "embeddings_mode": resolve_embeddings_mode(),
+            "faiss_index_path": get_faiss_index_path(),
+            "faiss_index_ready": is_faiss_index_ready(),
+        }
+    )

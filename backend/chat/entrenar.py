@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import logging
+from pathlib import Path
+
 import fitz
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -8,13 +10,15 @@ from langchain_core.documents import Document as LCDocument
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 
-from embeddings import bio_wrapper, _model as sent2vec_model
+from chat.embeddings import bio_wrapper, get_faiss_index_path, resolve_embeddings_mode
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-PDF_PATH   = "./Documentos/seccion_renal.pdf"
-FAISS_PATH = "./FAISS/faiss_index_renal"
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent.parent
+PDF_PATH = str(PROJECT_DIR / "entrenamiento" / "Documentos" / "seccion_renal.pdf")
+FAISS_PATH = get_faiss_index_path()
 
 def txt_y_metadatos(pdf_path: str) -> tuple[str, dict]:
     """Extrae texto completo y headers del PDF."""
@@ -48,9 +52,9 @@ def chunk_text(text: str) -> list[str]:
 
 
 def generar_embeddings(chunks: list[str]) -> np.ndarray | None:
-    """Genera embeddings con BioSentVec para una lista de chunks."""
+    """Genera embeddings usando el wrapper seleccionado (BioSentVec o Bioformer)."""
     try:
-        embeddings = sent2vec_model.embed_sentences(chunks)
+        embeddings = bio_wrapper.embed_documents(chunks)
         return embeddings
     except Exception as e:
         logger.error(f"Error generando embeddings: {e}")
@@ -107,6 +111,9 @@ def construir_ensemble(chunks: list[str], metadatos: dict, vector_store: FAISS) 
 
 
 def main():
+    logger.info("Modo de embeddings seleccionado: %s", resolve_embeddings_mode())
+    logger.info("Índice FAISS de salida: %s", FAISS_PATH)
+
     texto, metadatos = txt_y_metadatos(PDF_PATH)
     for h in metadatos["headers_extraidos"][:5]:
         print(f"     • {h}")
