@@ -24,8 +24,8 @@ from langchain_ollama import OllamaLLM
 
 from .embeddings import (
     FaissIndexNotFoundError,
-    bio_wrapper,
     ensure_faiss_index_exists,
+    get_embeddings,
     get_faiss_index_path,
     is_faiss_index_ready,
     resolve_embeddings_mode,
@@ -222,8 +222,6 @@ class MessageListCreateView(APIView):
 # PARÁMETROS
 # ══════════════════════════════════════════════
 
-FAISS_PATH = get_faiss_index_path()
-
 SYSTEM_PROMPT = (
     "Eres el Dr. Nefros, un médico especialista en nefrología y urología con amplia experiencia clínica y docente. "
     "Tu conocimiento está basado exclusivamente en la Sección 7 del Harrison: Principios de Medicina Interna, "
@@ -259,17 +257,18 @@ SYSTEM_PROMPT = (
 # RAG — se inicializa de forma diferida y se reutiliza luego
 # ══════════════════════════════════════════════
 
-@lru_cache(maxsize=1)
-def _build_rag_chain():
-    embeddings_mode = resolve_embeddings_mode()
+@lru_cache(maxsize=2)
+def _build_rag_chain(mode: str):
+    embeddings_mode = resolve_embeddings_mode(mode)
     faiss_path = ensure_faiss_index_exists(embeddings_mode)
+    embeddings = get_embeddings(embeddings_mode)
 
     logger.info("⏳ Inicializando RAG con EMBEDDINGS_MODE=%s", embeddings_mode)
     logger.info("⏳ Cargando índice FAISS desde: %s", faiss_path)
 
     vector_store = FAISS.load_local(
         faiss_path,
-        bio_wrapper,
+        embeddings,
         allow_dangerous_deserialization=True,
     )
 
@@ -330,17 +329,19 @@ def chat_view(request):
         )
 
     try:
-        result = _build_rag_chain().invoke({"input": message})
+        embeddings_mode = resolve_embeddings_mode()
+        result = _build_rag_chain(embeddings_mode).invoke({"input": message})
         sources = [doc.page_content[:200] for doc in result.get("context", [])]
         return Response({"answer": result["answer"], "sources": sources})
 
     except FaissIndexNotFoundError as exc:
+        embeddings_mode = resolve_embeddings_mode()
         logger.warning("RAG no disponible: %s", exc)
         return Response(
             {
                 "error": str(exc),
-                "embeddings_mode": resolve_embeddings_mode(),
-                "faiss_index_path": get_faiss_index_path(),
+                "embeddings_mode": embeddings_mode,
+                "faiss_index_path": get_faiss_index_path(embeddings_mode),
             },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
@@ -355,12 +356,13 @@ def chat_view(request):
 @permission_classes([AllowAny])
 def health_view(request):
     """GET /chat/health/"""
+    embeddings_mode = resolve_embeddings_mode()
     return Response(
         {
             "status": "ok",
             "model": "llama3.2",
-            "embeddings_mode": resolve_embeddings_mode(),
-            "faiss_index_path": get_faiss_index_path(),
-            "faiss_index_ready": is_faiss_index_ready(),
+            "embeddings_mode": embeddings_mode,
+            "faiss_index_path": get_faiss_index_path(embeddings_mode),
+            "faiss_index_ready": is_faiss_index_ready(embeddings_mode),
         }
     )

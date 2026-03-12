@@ -1,5 +1,5 @@
 import os
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -13,6 +13,7 @@ from chat.embeddings import (
     resolve_embeddings_mode,
 )
 from users.models import User
+from chat import views
 
 
 class ChatEndpointTests(APITestCase):
@@ -57,6 +58,10 @@ class ChatEndpointTests(APITestCase):
 
 
 class EmbeddingsConfigurationTests(APITestCase):
+    def setUp(self):
+        views._build_rag_chain.cache_clear()
+        self.addCleanup(views._build_rag_chain.cache_clear)
+
     def test_default_embeddings_mode_is_full(self):
         original_value = os.environ.pop("EMBEDDINGS_MODE", None)
         try:
@@ -80,6 +85,80 @@ class EmbeddingsConfigurationTests(APITestCase):
         self.assertEqual(embeddings.embed_query("creatinina"), [0.1, 0.2])
         builder.assert_called_once_with()
         backend.embed_query.assert_called_once_with("creatinina")
+
+    def test_lazy_embeddings_without_fixed_mode_follows_active_mode(self):
+        full_backend = Mock()
+        full_backend.embed_query.return_value = [1.0]
+        lite_backend = Mock()
+        lite_backend.embed_query.return_value = [2.0]
+        full_builder = Mock(return_value=full_backend)
+        lite_builder = Mock(return_value=lite_backend)
+
+        embeddings = LazyEmbeddings(builders={"full": full_builder, "lite": lite_builder})
+
+        with patch.dict(os.environ, {"EMBEDDINGS_MODE": "full"}, clear=False):
+            self.assertEqual(embeddings.embed_query("urea"), [1.0])
+
+        with patch.dict(os.environ, {"EMBEDDINGS_MODE": "lite"}, clear=False):
+            self.assertEqual(embeddings.embed_query("creatinina"), [2.0])
+
+        with patch.dict(os.environ, {"EMBEDDINGS_MODE": "full"}, clear=False):
+            self.assertEqual(embeddings.embed_query("filtracion"), [1.0])
+
+        full_builder.assert_called_once_with()
+        lite_builder.assert_called_once_with()
+
+    @patch("chat.views.create_retrieval_chain")
+    @patch("chat.views.create_stuff_documents_chain")
+    @patch("chat.views.ChatPromptTemplate.from_messages")
+    @patch("chat.views.OllamaLLM")
+    @patch("chat.views.EnsembleRetriever")
+    @patch("chat.views.BM25Retriever.from_documents")
+    @patch("chat.views.FAISS.load_local")
+    @patch("chat.views.get_embeddings")
+    @patch("chat.views.ensure_faiss_index_exists")
+    def test_rag_chain_cache_is_isolated_per_embeddings_mode(
+        self,
+        mock_ensure_index,
+        mock_get_embeddings,
+        mock_load_local,
+        mock_bm25_from_documents,
+        mock_ensemble_retriever,
+        _mock_ollama,
+        _mock_prompt_from_messages,
+        _mock_create_stuff_documents_chain,
+        mock_create_retrieval_chain,
+    ):
+        mock_ensure_index.side_effect = lambda mode: f"/tmp/{mode}"
+        mock_get_embeddings.side_effect = lambda mode: f"embeddings::{mode}"
+
+        vector_store = Mock()
+        vector_store.docstore._dict = {"doc": Mock()}
+        vector_store.as_retriever.return_value = Mock()
+        mock_load_local.return_value = vector_store
+
+        bm25_retriever = Mock()
+        mock_bm25_from_documents.return_value = bm25_retriever
+        mock_ensemble_retriever.return_value = Mock()
+
+        full_chain = Mock(name="full_chain")
+        lite_chain = Mock(name="lite_chain")
+        mock_create_retrieval_chain.side_effect = [full_chain, lite_chain]
+
+        first_full = views._build_rag_chain("full")
+        second_full = views._build_rag_chain("full")
+        first_lite = views._build_rag_chain("lite")
+
+        self.assertIs(first_full, second_full)
+        self.assertIsNot(first_full, first_lite)
+        self.assertEqual(mock_get_embeddings.call_args_list, [call("full"), call("lite")])
+        self.assertEqual(
+            mock_load_local.call_args_list,
+            [
+                call("/tmp/full", "embeddings::full", allow_dangerous_deserialization=True),
+                call("/tmp/lite", "embeddings::lite", allow_dangerous_deserialization=True),
+            ],
+        )
 
     def test_invalid_embeddings_mode_raises_error(self):
         with self.assertRaises(ValueError):

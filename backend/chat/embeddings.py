@@ -87,14 +87,22 @@ EMBEDDING_BUILDERS: dict[str, EmbeddingBuilder] = {
 
 class LazyEmbeddings(Embeddings):
     def __init__(self, mode: str | None = None, builders: dict[str, EmbeddingBuilder] | None = None):
-        self.mode = resolve_embeddings_mode(mode)
+        self._mode_override = resolve_embeddings_mode(mode) if mode is not None else None
         self._builders = builders or EMBEDDING_BUILDERS
-        self._instance: Embeddings | None = None
+        self._instances: dict[str, Embeddings] = {}
 
-    def _get_instance(self) -> Embeddings:
-        if self._instance is None:
-            self._instance = self._builders[self.mode]()
-        return self._instance
+    @property
+    def mode(self) -> str:
+        return self._resolve_mode()
+
+    def _resolve_mode(self, mode: str | None = None) -> str:
+        return resolve_embeddings_mode(mode or self._mode_override)
+
+    def _get_instance(self, mode: str | None = None) -> Embeddings:
+        selected_mode = self._resolve_mode(mode)
+        if selected_mode not in self._instances:
+            self._instances[selected_mode] = self._builders[selected_mode]()
+        return self._instances[selected_mode]
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self._get_instance().embed_documents(texts)
