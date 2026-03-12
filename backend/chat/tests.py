@@ -32,29 +32,53 @@ class ChatEndpointTests(APITestCase):
         self.access_token_a = register_a.data["access_token"]
         self.access_token_b = register_b.data["access_token"]
 
-    def test_send_and_history(self):
+    @patch("chat.views._invoke_rag", return_value=("Respuesta IA", ["fuente demo"], "full"))
+    def test_send_and_history(self, _mock_invoke_rag):
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access_token_a}")
 
         create_chat_response = self.client.post(
             "/chat/",
-            {"participant_email": "chat2@example.com", "title": "Chat de prueba"},
+            {"title": "Chat de prueba"},
             format="json",
         )
         self.assertEqual(create_chat_response.status_code, status.HTTP_201_CREATED)
         chat_id = create_chat_response.data["id"]
+        self.assertEqual(create_chat_response.data["participantB"], "assistant")
 
         send_response = self.client.post(f"/chat/{chat_id}/messages", {"content": "Hola"}, format="json")
         self.assertEqual(send_response.status_code, status.HTTP_201_CREATED)
         self.assertIn("senderId", send_response.data)
+        self.assertEqual(send_response.data["senderId"], "assistant")
+        self.assertEqual(send_response.data["userMessage"]["senderId"], "user")
+        self.assertEqual(len(send_response.data["messages"]), 2)
 
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access_token_b}")
         send_response_b = self.client.post(f"/chat/{chat_id}/messages", {"content": "Que tal"}, format="json")
-        self.assertEqual(send_response_b.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(send_response_b.status_code, status.HTTP_404_NOT_FOUND)
+
+        history_response_for_other_user = self.client.get(f"/chat/{chat_id}/messages")
+        self.assertEqual(history_response_for_other_user.status_code, status.HTTP_404_NOT_FOUND)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access_token_a}")
 
         history_response = self.client.get(f"/chat/{chat_id}/messages")
         self.assertEqual(history_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(history_response.data["messages"]), 2)
         self.assertEqual(history_response.data["messages"][0]["content"], "Hola")
+        self.assertEqual(history_response.data["messages"][0]["senderId"], "user")
+        self.assertEqual(history_response.data["messages"][1]["senderId"], "assistant")
+
+    def test_create_chat_rejects_identity_fields_in_body(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access_token_a}")
+
+        response = self.client.post(
+            "/chat/",
+            {"title": "Chat de prueba", "participant_email": "chat2@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Authorization: Bearer", str(response.data))
 
 
 class EmbeddingsConfigurationTests(APITestCase):
