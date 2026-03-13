@@ -67,6 +67,7 @@ def _serialize_user(user):
     owner_id = str(user.id)
     return {
         "id": owner_id,
+        "username": user.username,
         "email": user.email,
         "chats": [_serialize_chat(chat, owner_id) for chat in user.chats],
     }
@@ -90,6 +91,7 @@ class RegisterView(APIView):
 
         now = now_utc()
         user = User(
+            username=data["username"],
             email=data["email"],
             chats=[],
             created_at=now,

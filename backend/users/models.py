@@ -18,6 +18,7 @@ class Chat(EmbeddedDocument):
 
 
 class User(Document):
+    username = StringField(required=True, unique=True, max_length=150)
     email = EmailField(required=True, unique=True)
     password = StringField(required=True)
     chats = EmbeddedDocumentListField(Chat, default=list)
@@ -26,7 +27,7 @@ class User(Document):
 
     meta = {
         "collection": "users",
-        "indexes": ["email"],
+        "indexes": ["email", "username"],
     }
 
     def set_password(self, raw_password: str):
