@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 
 class RegisterSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
     password = serializers.CharField(min_length=8, write_only=True)
 
@@ -25,6 +26,7 @@ class ChatSerializer(serializers.Serializer):
 
 class UserSerializer(serializers.Serializer):
     id = serializers.CharField()
+    username = serializers.CharField()
     email = serializers.EmailField()
     chats = ChatSerializer(many=True)
 
