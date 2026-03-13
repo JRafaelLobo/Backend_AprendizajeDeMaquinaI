@@ -9,7 +9,7 @@ schema_view = get_schema_view(
     openapi.Info(
         title="Backend API",
         default_version='v1',
-        description="API de autenticación, chat y rating",
+        description="API de autenticación y chat para el proyecto de aprendizaje de máquina",
     ),
     public=True,
     permission_classes=(AllowAny,),
@@ -22,7 +22,6 @@ urlpatterns = [
     path("", redirect_to_docs),
     path("auth/", include("users.urls")),
     path("chat/", include("chat.urls")),
-    path("rating/", include("rating.urls")),
     path("swagger/", schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path("redoc/", schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
 ]

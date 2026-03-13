@@ -10,11 +10,14 @@ class MessageSerializer(serializers.Serializer):
     content = serializers.CharField()
     senderId = serializers.CharField()
     sendTime = serializers.DateTimeField()
+    isAI = serializers.BooleanField()
+    role = serializers.CharField()
 
 
 class ChatSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     title = serializers.CharField()
+    ownerId = serializers.CharField()
     participantA = serializers.CharField()
     participantB = serializers.CharField()
     messages = MessageSerializer(many=True)

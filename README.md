@@ -14,11 +14,11 @@ Este repositorio contiene el backend del proyecto **BotMedics**, un sistema de A
 ## ⚙️ Configuración de Entornos
 El proyecto utiliza variables de entorno para garantizar seguridad y flexibilidad.
 
-- Usa el archivo `.env.example` como plantilla.
+- Usa el archivo `backend/.env.example` como plantilla.
 - Copia y renombra:
 
 ```bash
-cp .env.example .env
+cp backend/.env.example backend/.env
 ```
 
 ### Entornos disponibles
@@ -27,6 +27,38 @@ cp .env.example .env
 - **production** – Para despliegues reales
 
 Todas las configuraciones se administran desde `infrastructure/config`.
+
+### Selección del modelo de embeddings
+El backend admite dos modos controlados con `EMBEDDINGS_MODE`:
+
+- `full`: usa BioSentVec y mantiene la compatibilidad con el índice FAISS actual.
+- `lite`: usa `bioformers/bioformer-8L` y guarda o carga un índice FAISS separado para evitar incompatibilidades de dimensión.
+
+Ambos indices pueden coexistir al mismo tiempo:
+
+- `full` usa `backend/chat/FAISS/faiss_index_renal`
+- `lite` usa `backend/chat/FAISS/faiss_index_renal_lite`
+
+El modo activo se resuelve con `EMBEDDINGS_MODE` y tanto el entrenamiento como la consulta usan el indice correspondiente sin sobrescribir el del otro modo.
+
+Ejemplo:
+
+```bash
+EMBEDDINGS_MODE=full
+```
+
+```bash
+EMBEDDINGS_MODE=lite
+```
+
+Al cambiar de modo, debes generar el índice FAISS correspondiente con ese mismo embedding. Si activas `lite` sin haber generado antes `backend/chat/FAISS/faiss_index_renal_lite/index.faiss`, el endpoint de chat responderá que el índice no está disponible.
+
+Ejemplo para generar el índice `lite`:
+
+```bash
+cd backend
+EMBEDDINGS_MODE=lite ../venv/bin/python chat/entrenar.py
+```
 
 ---
 
@@ -46,6 +78,8 @@ Instalar dependencias (si no las tienes):
 ```bash
 pip install -r requirements.txt
 ```
+
+Si vas a usar `EMBEDDINGS_MODE=lite`, asegúrate de instalar también las dependencias necesarias para Bioformer.
 
 Ejecutar el servidor:
 

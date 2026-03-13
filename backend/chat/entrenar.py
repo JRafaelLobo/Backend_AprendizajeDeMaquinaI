@@ -1,20 +1,23 @@
 import os
-import numpy as np
 import logging
+from pathlib import Path
+
 import fitz
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document as LCDocument
+from langchain_core.embeddings import Embeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 
-from embeddings import bio_wrapper, _model as sent2vec_model
+from chat.embeddings import get_embeddings, get_faiss_index_path, resolve_embeddings_mode
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-PDF_PATH   = "./Documentos/seccion_renal.pdf"
-FAISS_PATH = "./FAISS/faiss_index_renal"
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = BASE_DIR.parent.parent
+PDF_PATH = str(PROJECT_DIR / "entrenamiento" / "Documentos" / "seccion_renal.pdf")
 
 def txt_y_metadatos(pdf_path: str) -> tuple[str, dict]:
     """Extrae texto completo y headers del PDF."""
@@ -47,17 +50,21 @@ def chunk_text(text: str) -> list[str]:
     return splitter.split_text(text)
 
 
-def generar_embeddings(chunks: list[str]) -> np.ndarray | None:
-    """Genera embeddings con BioSentVec para una lista de chunks."""
+def generar_embeddings(chunks: list[str], embeddings: Embeddings) -> list[list[float]] | None:
+    """Genera embeddings usando el wrapper seleccionado (BioSentVec o Bioformer)."""
     try:
-        embeddings = sent2vec_model.embed_sentences(chunks)
-        return embeddings
+        return embeddings.embed_documents(chunks)
     except Exception as e:
         logger.error(f"Error generando embeddings: {e}")
         return None
 
 
-def guardar_en_faiss(chunks: list[str], metadatos_archivo: dict, faiss_path: str) -> FAISS | None:
+def guardar_en_faiss(
+    chunks: list[str],
+    metadatos_archivo: dict,
+    faiss_path: str,
+    embeddings: Embeddings,
+) -> FAISS | None:
     """Crea el vector store FAISS y lo guarda en disco."""
     try:
         documentos = [
@@ -71,7 +78,7 @@ def guardar_en_faiss(chunks: list[str], metadatos_archivo: dict, faiss_path: str
             for chunk in chunks
         ]
 
-        vector_store = FAISS.from_documents(documents=documentos, embedding=bio_wrapper)
+        vector_store = FAISS.from_documents(documents=documentos, embedding=embeddings)
 
         os.makedirs(os.path.dirname(faiss_path), exist_ok=True)
         vector_store.save_local(faiss_path)
@@ -107,23 +114,28 @@ def construir_ensemble(chunks: list[str], metadatos: dict, vector_store: FAISS) 
 
 
 def main():
+    embeddings_mode = resolve_embeddings_mode()
+    faiss_path = get_faiss_index_path(embeddings_mode)
+    embeddings = get_embeddings(embeddings_mode)
+
+    logger.info("Modo de embeddings seleccionado: %s", embeddings_mode)
+    logger.info("Índice FAISS de salida: %s", faiss_path)
+
     texto, metadatos = txt_y_metadatos(PDF_PATH)
     for h in metadatos["headers_extraidos"][:5]:
         print(f"     • {h}")
 
     chunks = chunk_text(texto)
-    vectores = generar_embeddings(chunks)
+    vectores = generar_embeddings(chunks, embeddings)
     if vectores is None:
         print("  ❌ Error generando embeddings. Abortando.")
         return
 
-    vectores_np = np.array(vectores)
-
-    vector_store = guardar_en_faiss(chunks, metadatos, FAISS_PATH)
+    vector_store = guardar_en_faiss(chunks, metadatos, faiss_path, embeddings)
     if vector_store is None:
         print("  ❌ Error guardando en FAISS.")
         return
-    print(f"  ✅ FAISS guardado en: {FAISS_PATH}")
+    print(f"  ✅ FAISS guardado en: {faiss_path}")
 
     ensemble = construir_ensemble(chunks, metadatos, vector_store)
 
