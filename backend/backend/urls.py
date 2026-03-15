@@ -20,8 +20,8 @@ def redirect_to_docs(request):
 
 urlpatterns = [
     path("", redirect_to_docs),
-    path("auth/", include("users.urls")),
-    path("chat/", include("chat.urls")),
+    path("api/auth/", include("users.urls")),
+    path("api/chat/", include("chat.urls")),
     path("swagger/", schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path("redoc/", schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
 ]
